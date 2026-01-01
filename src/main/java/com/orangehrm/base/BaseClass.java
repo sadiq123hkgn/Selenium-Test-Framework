@@ -2,6 +2,7 @@ package com.orangehrm.base;
 
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.net.URL;
 import java.time.Duration;
 import java.util.Properties;
 import java.util.concurrent.TimeUnit;
@@ -10,11 +11,16 @@ import java.util.concurrent.locks.LockSupport;
 import org.apache.logging.log4j.Logger;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.chrome.ChromeDriver;
+import org.openqa.selenium.chrome.ChromeOptions;
 import org.openqa.selenium.edge.EdgeDriver;
+import org.openqa.selenium.edge.EdgeOptions;
 import org.openqa.selenium.firefox.FirefoxDriver;
+import org.openqa.selenium.firefox.FirefoxOptions;
+import org.openqa.selenium.remote.RemoteWebDriver;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.BeforeSuite;
+import org.testng.annotations.Parameters;
 import org.testng.asserts.SoftAssert;
 
 import com.orangehrm.actiondriver.ActionDriver;
@@ -24,120 +30,139 @@ import com.orangehrm.utilities.LoggerManager;
 public class BaseClass {
 
     protected static Properties prop;
-
-    // ThreadLocal WebDriver and ActionDriver for parallel execution
     private static ThreadLocal<WebDriver> driver = new ThreadLocal<>();
     private static ThreadLocal<ActionDriver> actionDriver = new ThreadLocal<>();
 
+    public static final Logger logger = LoggerManager.getLogger(BaseClass.class);
     protected ThreadLocal<SoftAssert> softAssert = ThreadLocal.withInitial(SoftAssert::new);
 
     public SoftAssert getSoftAssert() {
         return softAssert.get();
     }
 
-    public static final Logger logger = LoggerManager.getLogger(BaseClass.class);
-
-    // Load configuration before the test suite
+    /* ================= LOAD CONFIG ================= */
     @BeforeSuite
     public void loadConfig() throws IOException {
         prop = new Properties();
-        FileInputStream fis = new FileInputStream(System.getProperty("user.dir") + "/src/main/resources/config.properties");
+        FileInputStream fis = new FileInputStream(
+                System.getProperty("user.dir") + "/src/main/resources/config.properties");
         prop.load(fis);
-        logger.info("config.properties file loaded");
-        // ExtentManager.getReporter() is implemented in TestListener
+        logger.info("config.properties loaded successfully");
     }
 
-    // Setup WebDriver before each test method
+    /* ================= SETUP ================= */
     @BeforeMethod
-    public synchronized void setup() {
-        logger.info("Setting up WebDriver for: " + this.getClass().getSimpleName());
-        launchBrowser();
+    @Parameters("browser")
+    public synchronized void setup(String browser) {
+        launchBrowser(browser);
         configureBrowser();
-        staticWait(2);
-        logger.info("WebDriver initialized and browser maximized");
 
         actionDriver.set(new ActionDriver(getDriver()));
-        logger.info("ActionDriver initialized for thread: " + Thread.currentThread().getId());
+        logger.info("Driver & ActionDriver initialized for thread: " + Thread.currentThread().getId());
     }
 
-    // Launch browser based on config
-    private synchronized void launchBrowser() {
-        String browser = prop.getProperty("browser");
+    /* ================= LAUNCH BROWSER ================= */
+    private synchronized void launchBrowser(String browser) {
+
+        boolean seleniumGrid = Boolean.parseBoolean(prop.getProperty("seleniumGrid"));
+        String gridURL = prop.getProperty("gridURL");
+
         try {
-            switch (browser.toLowerCase()) {
-                case "chrome":
-                    driver.set(new ChromeDriver());
-                    logger.info("ChromeDriver instance created");
-                    break;
-                case "firefox":
-                    driver.set(new FirefoxDriver());
-                    logger.info("FirefoxDriver instance created");
-                    break;
-                case "edge":
-                    driver.set(new EdgeDriver());
-                    logger.info("EdgeDriver instance created");
-                    break;
-                default:
-                    throw new IllegalArgumentException("Browser not supported: " + browser);
+            if (seleniumGrid) {
+
+                if (browser.equalsIgnoreCase("chrome")) {
+                    ChromeOptions options = new ChromeOptions();
+                    options.addArguments("--headless", "--disable-gpu", "--window-size=1920,1080");
+                    driver.set(new RemoteWebDriver(new URL(gridURL), options));
+
+                } else if (browser.equalsIgnoreCase("firefox")) {
+                    FirefoxOptions options = new FirefoxOptions();
+                    options.addArguments("-headless");
+                    driver.set(new RemoteWebDriver(new URL(gridURL), options));
+
+                } else if (browser.equalsIgnoreCase("edge")) {
+                    EdgeOptions options = new EdgeOptions();
+                    options.addArguments("--headless=new", "--disable-gpu", "--window-size=1920,1080");
+                    driver.set(new RemoteWebDriver(new URL(gridURL), options));
+
+                } else {
+                    throw new IllegalArgumentException("Unsupported Browser: " + browser);
+                }
+
+                logger.info("RemoteWebDriver started on Selenium Grid");
+
+            } else {
+
+                if (browser.equalsIgnoreCase("chrome")) {
+                    ChromeOptions options = new ChromeOptions();
+                    options.addArguments("--headless", "--disable-gpu", "--window-size=1920,1080");
+                    driver.set(new ChromeDriver(options));
+
+                } else if (browser.equalsIgnoreCase("firefox")) {
+                    FirefoxOptions options = new FirefoxOptions();
+                    options.addArguments("-headless");
+                    driver.set(new FirefoxDriver(options));
+
+                } else if (browser.equalsIgnoreCase("edge")) {
+                    EdgeOptions options = new EdgeOptions();
+                    options.addArguments("--headless=new", "--disable-gpu", "--window-size=1920,1080");
+                    driver.set(new EdgeDriver(options));
+
+                } else {
+                    throw new IllegalArgumentException("Unsupported Browser: " + browser);
+                }
+
+                ExtentManager.registerDriver(getDriver());
+                logger.info("Local WebDriver started");
             }
-            ExtentManager.registerDriver(getDriver());
+
         } catch (Exception e) {
-            logger.error("Failed to initialize browser: " + browser, e);
-            throw new RuntimeException(e);
+            throw new RuntimeException("Failed to initialize WebDriver", e);
         }
     }
 
-    // Configure browser settings
+    /* ================= CONFIGURE BROWSER ================= */
     private void configureBrowser() {
+
         int implicitWait = Integer.parseInt(prop.getProperty("implicitWait"));
         getDriver().manage().timeouts().implicitlyWait(Duration.ofSeconds(implicitWait));
         getDriver().manage().window().maximize();
 
-        try {
-            getDriver().get(prop.getProperty("url"));
-        } catch (Exception e) {
-            logger.error("Failed to navigate to URL: " + prop.getProperty("url"), e);
-        }
+        // SAME URL for Grid & Local
+        getDriver().get(prop.getProperty("url"));
     }
 
-    // Tear down WebDriver after each test method
+    /* ================= TEARDOWN ================= */
     @AfterMethod
     public synchronized void tearDown() {
         if (getDriver() != null) {
-            try {
-                getDriver().quit();
-                logger.info("WebDriver instance closed for thread: " + Thread.currentThread().getId());
-            } catch (Exception e) {
-                logger.error("Unable to quit WebDriver: " + e.getMessage(), e);
-            } finally {
-                driver.remove();
-                actionDriver.remove();
-            }
+            getDriver().quit();
+            driver.remove();
+            actionDriver.remove();
+            logger.info("WebDriver closed successfully");
         }
     }
 
-    // Getter for Properties
-    public static Properties getProp() {
-        return prop;
-    }
-
-    // Getter for WebDriver
+    /* ================= GETTERS ================= */
     public static WebDriver getDriver() {
         if (driver.get() == null) {
-            throw new IllegalStateException("WebDriver is not initialized for thread: " + Thread.currentThread().getId());
+            throw new IllegalStateException("WebDriver not initialized");
         }
         return driver.get();
     }
 
-    // Getter for ActionDriver
     public static ActionDriver getActionDriver() {
         if (actionDriver.get() == null) {
-            throw new IllegalStateException("ActionDriver is not initialized for thread: " + Thread.currentThread().getId());
+            throw new IllegalStateException("ActionDriver not initialized");
         }
         return actionDriver.get();
     }
 
-    // Simple static wait in seconds
+    public static Properties getProp() {
+        return prop;
+    }
+
+    /* ================= STATIC WAIT ================= */
     public void staticWait(int seconds) {
         LockSupport.parkNanos(TimeUnit.SECONDS.toNanos(seconds));
     }
